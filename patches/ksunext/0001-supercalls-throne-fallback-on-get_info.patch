@@ -1,0 +1,37 @@
+diff --git a/kernel/supercalls.c b/kernel/supercalls.c
+index 7b127ea6..965e9ea3 100644
+--- a/kernel/supercalls.c
++++ b/kernel/supercalls.c
+@@ -31,6 +31,7 @@
+ #include "selinux/selinux.h"
+ #include "file_wrapper.h"
+ #include "syscall_hook_manager.h"
++#include "throne_tracker.h"
+ 
+ #ifdef CONFIG_KSU_SUSFS
+ bool susfs_is_boot_completed_triggered __read_mostly = false;
+@@ -86,11 +87,23 @@ static int do_get_info(void __user *arg)
+ 	if (ksuver_override) {
+ 		cmd.version = ksuver_override;
+ 	}
+-	
++
+ #ifdef MODULE
+ 	cmd.flags |= 0x1;
+ #endif
+ 
++	/* HACK for non-GKI 4.14 manual-hook builds: pkg_observer's fsnotify on
++	 * /data/system can't be set at kernel init (no /data yet), and the
++	 * init.rc inject path requires ksud already running. Result: throne
++	 * never scans, manager_appid stays invalid, manager APK keeps showing
++	 * "v2 signature not found". Fall back: when the manager APK probes
++	 * GET_INFO and we haven't crowned anyone yet, scan /data/app right now.
++	 * track_throne(false) walks packages.list + search_manager() on miss.
++	 */
++	if (!ksu_is_manager_appid_valid()) {
++		track_throne(false);
++	}
++
+ 	if (is_manager()) {
+ 		cmd.flags |= 0x2;
+ 	}

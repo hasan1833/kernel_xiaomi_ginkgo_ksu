@@ -77,6 +77,10 @@ modules.builtin
 !.mailmap
 !.cocciconfig
 
+# Local patches directory (applied to submodules after init)
+!/patches/
+!/patches/**
+
 #
 # Generated include files
 #
@@ -87,8 +91,7 @@ arch/*/include/generated
 # stgit generated dirs
 patches-*
 
-# quilt's files
-patches
+# quilt's files (we use /patches/ for our own submodule patches; quilt not in use)
 series
 
 # cscope files
