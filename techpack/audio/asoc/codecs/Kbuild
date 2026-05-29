@@ -202,6 +202,20 @@ ifeq ($(call cc-option-yn, -Wheader-guard),y)
 EXTRA_CFLAGS += -Wheader-guard
 endif
 
+# Clang 18+: silence default-const-init + implicit-enum-enum-cast (treated as -Werror in this module)
+ifeq ($(call cc-option-yn, -Wno-default-const-init-unsafe),y)
+EXTRA_CFLAGS += -Wno-default-const-init-unsafe
+endif
+ifeq ($(call cc-option-yn, -Wno-default-const-init-field-unsafe),y)
+EXTRA_CFLAGS += -Wno-default-const-init-field-unsafe
+endif
+ifeq ($(call cc-option-yn, -Wno-default-const-init-var-unsafe),y)
+EXTRA_CFLAGS += -Wno-default-const-init-var-unsafe
+endif
+ifeq ($(call cc-option-yn, -Wno-implicit-enum-enum-cast),y)
+EXTRA_CFLAGS += -Wno-implicit-enum-enum-cast
+endif
+
 
 ifeq ($(KERNEL_BUILD), 0)
 KBUILD_EXTRA_SYMBOLS +=$(OUT)/obj/vendor/qcom/opensource/audio-kernel/dsp/Module.symvers

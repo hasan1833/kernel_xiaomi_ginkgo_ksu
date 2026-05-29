@@ -178,6 +178,17 @@ ifeq ($(call cc-option-yn, -Wheader-guard),y)
 EXTRA_CFLAGS += -Wheader-guard
 endif
 
+# Clang 18+: silence default-const-init warnings (treated as -Werror in this module)
+ifeq ($(call cc-option-yn, -Wno-default-const-init-unsafe),y)
+EXTRA_CFLAGS += -Wno-default-const-init-unsafe
+endif
+ifeq ($(call cc-option-yn, -Wno-default-const-init-field-unsafe),y)
+EXTRA_CFLAGS += -Wno-default-const-init-field-unsafe
+endif
+ifeq ($(call cc-option-yn, -Wno-default-const-init-var-unsafe),y)
+EXTRA_CFLAGS += -Wno-default-const-init-var-unsafe
+endif
+
 # If the module name is not "wlan", then the define MULTI_IF_NAME to be the
 # same a the QCA CHIP name. The host driver will then append MULTI_IF_NAME to
 # any string that must be unique for all instances of the driver on the system.
