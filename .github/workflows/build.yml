@@ -1,1 +1,141 @@
+name: Build Ginkgo Kernel
 
+on:
+  workflow_dispatch:
+    inputs:
+      defconfig:
+        description: "Defconfig name (auto = detect)"
+        default: "auto"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout kernel source (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev libncurses-dev \
+            cpio zip curl git python3 lz4 \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
+      - name: Get clang toolchain
+        run: |
+          mkdir -p $HOME/clang && cd $HOME/clang
+          ok=0
+          for b in android14-release android14-qpr3-release main master; do
+            if curl -fL --retry 2 -o clang.tgz \
+              "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/$b/clang-r498229b.tar.gz"; then
+              tar xzf clang.tgz && rm clang.tgz && ok=1 && break
+            fi
+          done
+          if [ "$ok" != "1" ]; then
+            echo "AOSP clang failed, using proton-clang fallback"
+            rm -rf $HOME/clang
+            git clone --depth=1 https://github.com/kdrag0n/proton-clang $HOME/clang
+          fi
+          echo "$HOME/clang/bin" >> $GITHUB_PATH
+          $HOME/clang/bin/clang --version | head -1
+
+      - name: Pick defconfig
+        id: dc
+        run: |
+          if [ "${{ github.event.inputs.defconfig }}" != "auto" ]; then
+            DC="${{ github.event.inputs.defconfig }}"
+          else
+            F=$(cd arch/arm64/configs && find . -name '*ginkgo*defconfig' | sed 's|^\./||' | sort)
+            echo "Found:"; echo "$F"
+            DC=$(echo "$F" | grep -m1 perf || echo "$F" | head -1)
+          fi
+          [ -z "$DC" ] && { echo "No ginkgo defconfig found"; exit 1; }
+          echo "Using $DC"
+          echo "dc=$DC" >> $GITHUB_OUTPUT
+
+      - name: Configure kernel
+        run: |
+          export ARCH=arm64 SUBARCH=arm64
+          MK="make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip"
+          echo "MK=$MK" >> $GITHUB_ENV
+          $MK ${{ steps.dc.outputs.dc }}
+
+          C="scripts/config --file out/.config"
+          $C -e MODULES -e MODULE_UNLOAD -e KPROBES -e HAVE_KPROBES -e UNUSED_SYMBOLS
+          $C -d MODULE_SIG -d MODULE_SIG_FORCE -d MODULE_SIG_ALL \
+             -d TRIM_UNUSED_KSYMS -d SECURITY_LOCKDOWN_LSM
+          $MK olddefconfig
+
+      - name: Verify config (fails build if wrong)
+        run: |
+          set -e
+          for o in MODULES MODULE_UNLOAD KPROBES HAVE_KPROBES UNUSED_SYMBOLS; do
+            grep -qx "CONFIG_$o=y" out/.config || { echo "MISSING CONFIG_$o=y"; exit 1; }
+          done
+          for o in MODULE_SIG MODULE_SIG_FORCE TRIM_UNUSED_KSYMS SECURITY_LOCKDOWN_LSM; do
+            if grep -qx "CONFIG_$o=y" out/.config; then echo "CONFIG_$o still enabled"; exit 1; fi
+          done
+          echo "All config options OK"
+          grep -E "CONFIG_(MODULES|MODULE_UNLOAD|KPROBES|HAVE_KPROBES|UNUSED_SYMBOLS|MODULE_SIG|MODULE_SIG_FORCE|TRIM_UNUSED_KSYMS|SECURITY_LOCKDOWN_LSM)[= ]" out/.config
+
+      - name: Build
+        run: |
+          $MK -j$(nproc) Image.gz-dtb 2>&1 | tee build.log
+          test -f out/arch/arm64/boot/Image.gz-dtb
+
+      - name: Package AnyKernel3 zip
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AK3
+          rm -rf AK3/.git AK3/.github AK3/README.md
+          cat > AK3/anykernel.sh <<'EOF'
+          ### AnyKernel3
+          properties() { '
+          kernel.string=Ginkgo KSU kernel (modules+kprobes)
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=ginkgo
+          device.name2=willow
+          supported.versions=
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; }
+          boot_attributes() {
+          set_perm_recursive 0 0 755 644 $RAMDISK/*;
+          set_perm_recursive 0 0 750 750 $RAMDISK/init* $RAMDISK/sbin;
+          }
+          BLOCK=/dev/block/bootdevice/by-name/boot;
+          IS_SLOT_DEVICE=0;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+          . tools/ak3-core.sh;
+          split_boot;
+          flash_boot;
+          EOF
+          sed -i 's/^          //' AK3/anykernel.sh
+          cp out/arch/arm64/boot/Image.gz-dtb AK3/
+          [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AK3/ && \
+            echo "flash_dtbo;" >> AK3/anykernel.sh
+          cp out/.config AK3/kernel_config.txt
+          cd AK3 && zip -r9 ../Ginkgo-KSU-modules-kprobes.zip . -x '*.git*'
+
+      - name: Upload zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ginkgo-KSU-modules-kprobes
+          path: Ginkgo-KSU-modules-kprobes.zip
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
